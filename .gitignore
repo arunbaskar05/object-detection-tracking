@@ -1,0 +1,13 @@
+# Virtual environment
+venv/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Large model weights (optional — see note below)
+# models/*.pt
+
+# Generated outputs (optional — keep a couple of samples instead)
+outputs/*.mp4
+outputs/*.jpg
