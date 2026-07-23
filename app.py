@@ -2,30 +2,66 @@
 import cv2
 
 from utils.tracker import Tracker
+from utils.detector import Detector
 from utils.visualization import draw_detections, draw_fps, draw_counts
 from utils.fps_counter import FPSCounter
 from utils.video_writer import VideoWriter
 from utils.object_counter import ObjectCounter
 from utils.ui_controller import UIController
+from utils.input_selector import choose_video_source
 
 
 WINDOW_NAME = "Real-Time Object Detection & Tracking"
 
 
 def nothing(x):
-   
+    
     pass
 
 
-def main():
-    cap = cv2.VideoCapture(0)
+def run_image_mode(source_path):
 
-    if not cap.isOpened():
-        print("Error: Could not open webcam.")
+    print("Running detection on image...")
+
+    detector = Detector(model_path="models/yolov8n.pt", confidence=0.5)
+
+    frame = cv2.imread(source_path)
+    if frame is None:
+        print("Error: Could not load the image file.")
         return
 
-    frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    results = detector.detect(frame)
+    frame = draw_detections(frame, results)
+
+    cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
+    cv2.waitKey(1)  
+
+    ui = UIController(window_name=WINDOW_NAME, screenshot_dir="outputs")
+
+    cv2.imshow(WINDOW_NAME, frame)
+
+    print("Press any key to close the window (screenshot auto-saved).")
+    cv2.waitKey(0)
+
+    ui.take_screenshot(frame)
+    cv2.destroyAllWindows()
+
+def run_video_mode(source, is_file_input):
+    cap = cv2.VideoCapture(source)
+
+    if not cap.isOpened():
+        print("Error: Could not open video source.")
+        return
+
+    MAX_DIMENSION = 720
+    original_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    original_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    scale = min(MAX_DIMENSION / max(original_width, original_height), 1.0)
+    frame_width = int(original_width * scale)
+    frame_height = int(original_height * scale)
+
+    print(f"Original resolution: {original_width}x{original_height}")
+    print(f"Processing at: {frame_width}x{frame_height} (scale={scale:.2f})")
 
     tracker = Tracker(model_path="models/yolov8n.pt", confidence=0.5, imgsz=640)
     fps_counter = FPSCounter(window_size=30)
@@ -37,34 +73,51 @@ def main():
     )
     object_counter = ObjectCounter()
 
-    # Create the named window FIRST, before adding a trackbar to it —
-    # cv2.createTrackbar requires the window to already exist.
     cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
 
-    ui = UIController(window_name=WINDOW_NAME, screenshot_dir="outputs")
+    
+    ret, first_frame = cap.read()
+    if not ret:
+        print("Error: Could not read from video source.")
+        cap.release()
+        return
 
-    # Create the confidence slider.
-    # Arguments: trackbar name, window name, initial value, max value, callback
-    # OpenCV trackbars only support INTEGER values, so we use 0-100
-    # to represent confidence 0.00-1.00, then divide by 100 when reading it.
+    if scale < 1.0:
+        first_frame = cv2.resize(first_frame, (frame_width, frame_height))
+
+    cv2.imshow(WINDOW_NAME, first_frame)
+    cv2.waitKey(1)  
+
+    ui = UIController(window_name=WINDOW_NAME, screenshot_dir="outputs")
     cv2.createTrackbar("Confidence x100", WINDOW_NAME, 50, 100, nothing)
 
-    print("Webcam opened successfully.")
     print("Controls: 'q'=quit | 'r'=toggle recording | 'f'=toggle fullscreen | 's'=screenshot")
 
+    unique_total = 0
+    unique_per_class = {}
+    first_iteration = True
+
     while True:
-        ret, frame = cap.read()
+        if first_iteration:
+            
+            frame = first_frame
+            first_iteration = False
+        else:
+            ret, frame = cap.read()
 
-        if not ret:
-            print("Error: Failed to grab frame.")
-            break
+            if not ret:
+                if is_file_input:
+                    print("Video file finished playing.")
+                else:
+                    print("Error: Failed to grab frame from webcam.")
+                break
 
-        # Read the current slider value and convert it back to a 0.0-1.0 float
+            if scale < 1.0:
+                frame = cv2.resize(frame, (frame_width, frame_height))
+
         confidence = cv2.getTrackbarPos("Confidence x100", WINDOW_NAME) / 100.0
-        # Guard against a confidence of exactly 0, which would let through
-        # every single detection regardless of quality (not meaningful)
         confidence = max(confidence, 0.01)
-        tracker.confidence = confidence  # Update it live, no restart needed
+        tracker.confidence = confidence
 
         fps = fps_counter.update()
         results = tracker.track(frame)
@@ -74,7 +127,6 @@ def main():
         frame = draw_fps(frame, fps)
         frame = draw_counts(frame, per_frame_counts, unique_total)
 
-        # Only write to the output video file if recording is currently ON
         if ui.is_recording:
             video_writer.write(frame)
 
@@ -82,13 +134,10 @@ def main():
 
         key = cv2.waitKey(1) & 0xFF
 
-        # Screenshot needs the actual frame, so we handle it here directly
         if key == ord('s'):
             ui.take_screenshot(frame)
 
-        # Let the UI controller handle quit/recording-toggle/fullscreen-toggle
-        should_quit = ui.handle_key(key)
-        if should_quit:
+        if ui.handle_key(key):
             print("Quitting...")
             break
 
@@ -101,6 +150,16 @@ def main():
     print(f"Total unique objects tracked: {unique_total}")
     for class_name, count in unique_per_class.items():
         print(f"  {class_name}: {count}")
+
+
+def main():
+    source, source_type = choose_video_source()
+
+    if source_type == "image":
+        run_image_mode(source)
+    else:
+        is_file_input = (source_type == "video")
+        run_video_mode(source, is_file_input)
 
 
 if __name__ == "__main__":
